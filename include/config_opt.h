@@ -104,16 +104,63 @@
 /* --- 防电压浪涌 AVS（CLOSED_LOOP1 0x88 b3）---
  * 速度指令突降时电机 BEMF 高于施加电压，机械能会回灌母线把 VM 顶高。
  * AVS 把负 Iq 参考钳到 0：不制动、不回灌，靠负载自然滑下来 —— 绕组里没电流，
- * 所以几乎不额外发热。你的母线没有大电容/耗散，这一项必须开。*/
+ * 所以几乎不额外发热。母线没有大电容/耗散时这一项必须开。
+ *
+ * ★ 和主动制动的分工（两者都开）：
+ *   · 速度差 > 进入阈值 → 主动制动接管，Iq 被放到 -ILIMIT 产生制动转矩（手册 §6.3.16 注 3）
+ *   · 速度差小 / 制动退出后的最后一小段 → 回到 AVS，自然滑行收尾*/
 #define CFG_AVS_EN             (1)
+
+/* ---------- 主动制动 Active Braking（手册 §6.3.16）----------
+ * 光靠 AVS 减速是"自然滑行"：从 50% 降到 10% 要几十秒，因为器件完全不刹车。
+ * 主动制动解决的就是这个：减速时**主动从母线取电**，把取来的电 + 转子动能
+ * 一起在绕组里烧成热，所以减速快、而且不会把能量泵回电源。
+ *
+ * 分工（手册原文的例子）：
+ *   · 速度差 > 进入阈值      → 主动制动
+ *   · 到"目标 + 退出阈值"    → 交回 AVS 收尾
+ * 代价是发热：能量不回流，就只能变成热。你要"不回灌 + 快一点"，这就是答案。
+ *
+ * ★ 生效前提（漏一条就白开）：ACTIVE_BRAKE_EN=1、BUS_POWER_LIMIT_ENABLE=0、
+ *   处于速度控制模式、MOD_INDEX_LIMIT≠0。*/
+#define CFG_ACTIVE_BRAKE_EN      (1)
+  #define CFG_ACT_BRAKE_ILIMIT_IDX (0x03) /* 制动时从母线取流上限（0x82 b22-20）：
+                                             0h=0.312 1h=0.625 2h=1.25 3h=1.875 ←当前
+                                             4h=2.5A 5h=3.125 6h=3.75 7h=保留
+                                             ★ 越大减速越猛，发热和电源压力也越大 */
+  #define CFG_ACT_BRAKE_SLEW_IDX   (0x04) /* 取流从 0 爬到上限的斜率（0xA2 b5-3）：
+                                             0h=10 1h=50 2h=100 3h=250 4h=500 ←当前
+                                             5h=1000 6h=5000 7h=不限 (A/s) */
+  #define CFG_ACT_BRAKE_ENTRY_IDX  (0x01) /* 速度差超过多少才进主动制动（0xAA b16-13）：
+                                             1h=5% ←当前 2h=10% 3h=15% … */
+  #define CFG_ACT_BRAKE_EXIT_IDX   (0x00) /* 速度差小于多少退出（0xA0 b30-29）：
+                                             0h=2.5% ←当前 1h=5% 2h=7.5% 3h=10%
+                                             ★ 必须比 ENTRY 小（手册 §6.3.16 注）*/
+  #define CFG_ACT_BRAKE_MOD_IDX    (0x07) /* 调制指数低于多少才允许主动制动（0xAA b12-10）：
+                                             0h=0(=关) … 7h=100% ←当前（TI 推荐起步值）
+                                             ★ 若减速时示波器看到 VM 尖峰，一档一档往下调 */
+  /* 制动电流环增益：Kp = 码值/2^7，Ki = 码值/2^9。
+   * ★ 复位值是 0（= 环路没增益，id_ref 恒为 0，等于没开）。*/
+  #define CFG_ACT_BRAKE_APPLY_GAINS (1)
+  #define CFG_ACT_BRAKE_KP_CODE    (0x040) /* Kp = 64/128 = 0.5 */
+  #define CFG_ACT_BRAKE_KI_CODE    (0x010) /* Ki = 16/512 = 0.03125 */
+
+#if CFG_ACTIVE_BRAKE_EN && (CFG_ACT_BRAKE_MOD_IDX == 0)
+#error "ACTIVE_BRAKE_MOD_INDEX_LIMIT = 0 时正转方向不制动（手册 §6.3.16），要么调到 1h 以上，要么把 CFG_ACTIVE_BRAKE_EN 设回 0。"
+#endif
+#if CFG_ACTIVE_BRAKE_EN && (CFG_ACT_BRAKE_ENTRY_IDX <= CFG_ACT_BRAKE_EXIT_IDX)
+#error "ACTIVE_BRAKE_SPEED_DELTA_LIMIT_ENTRY 必须大于 ..._EXIT（手册 §6.3.16），否则进不去或刚进去就退出。"
+#endif
 
 /* --- 加/减速斜率（CLOSED_LOOP1 0x88 b29-25 / b23-19，单位 Hz/s 电频率）---
  *   0h=0.5 1h=1 2h=2.5 3h=5 4h=7.5 5h=10 6h=20 7h=40 8h=60 9h=80 Ah=100 Bh=200
  *   Ch=300 Dh=400 Eh=500 Fh=600 … 14h=2000 … 1Fh=无限制
- * CL_ACC=Eh(500Hz/s)：0→600Hz 约 1.2 s，实测起步干脆且不冲电流。
- * CL_DEC=3h(5Hz/s)：AVS 开着时减速不走这个值（走自然滑行），设小是万一关 AVS 的保险。*/
-#define CFG_CL_ACC_IDX         (0x0E)
-#define CFG_CL_DEC_IDX         (0x03)
+ * ★ CL_DEC 是**速度参考值本身的斜坡限幅**，不是"限制制动强度"——设小了，
+ *   主动制动再猛也没用。实测：CL_DEC=5Hz/s 时 50%→10% 要 36 秒；
+ *   改成 300Hz/s 后同样过程 **2 秒**完成。
+ *   下面 300 Hz/s 配合主动制动实测：100%→20% 约 4 秒、50%→10% 约 2 秒，无过压故障。*/
+#define CFG_CL_ACC_IDX         (0x0E) /* Eh = 500 Hz/s：0→600Hz 约 1.2 s，起步干脆 */
+#define CFG_CL_DEC_IDX         (0x0C) /* Ch = 300 Hz/s ← 配合主动制动，减速快且不回灌 */
 
 /* --- PWM 载波频率 + 抖动（降噪的主要手段）---
  * CLOSED_LOOP1 0x88 b18-15：0h=10k 1h=15k 2h=20k 3h=25k 4h=30k 5h=35k
@@ -309,6 +356,20 @@ static const McfCfgEntry MCF_STANDALONE_CFG[] = {
     { 0x088, 0x00F80000UL, ((uint32_t)CFG_CL_DEC_IDX) << 19,     "CL_DEC" },
     { 0x088, 0x00078000UL, ((uint32_t)CFG_PWM_FREQ_IDX) << 15,   "PWM_FREQ_OUT（55 kHz）" },
     { 0x088, 0x00000008UL, ((uint32_t)CFG_AVS_EN) << 3,          "AVS_EN（防 VM 浪涌）" },
+#if CFG_ACTIVE_BRAKE_EN
+    /* 主动制动（手册 §6.3.16）—— 减速快且不回灌母线，能量变成绕组和 MOS 的热 */
+    { 0x084, 0x00000002UL, 1UL << 1,                                    "ACTIVE_BRAKE_EN（0x84 b1）" },
+    { 0x082, 0x00700000UL, ((uint32_t)CFG_ACT_BRAKE_ILIMIT_IDX) << 20,  "ACTIVE_BRAKE_CURRENT_LIMIT（母线取流上限）" },
+#if CFG_ACT_BRAKE_APPLY_GAINS
+    { 0x082, 0x000FFC00UL, ((uint32_t)CFG_ACT_BRAKE_KP_CODE) << 10,     "ACTIVE_BRAKE_KP（Kp = 值/2^7）" },
+    { 0x082, 0x000003FFUL, (uint32_t)CFG_ACT_BRAKE_KI_CODE,             "ACTIVE_BRAKE_KI（Ki = 值/2^9）" },
+#endif
+    { 0x0AA, 0x0001E000UL, ((uint32_t)CFG_ACT_BRAKE_ENTRY_IDX) << 13,   "ACTIVE_BRAKE_SPEED_DELTA_LIMIT_ENTRY" },
+    { 0x0AA, 0x00001C00UL, ((uint32_t)CFG_ACT_BRAKE_MOD_IDX)   << 10,   "ACTIVE_BRAKE_MOD_INDEX_LIMIT" },
+    { 0x0A0, 0x60000000UL, ((uint32_t)CFG_ACT_BRAKE_EXIT_IDX)  << 29,   "ACTIVE_BRAKE_SPEED_DELTA_LIMIT_EXIT" },
+    { 0x0A2, 0x00000038UL, ((uint32_t)CFG_ACT_BRAKE_SLEW_IDX)  <<  3,   "ACTIVE_BRAKE_BUS_CURRENT_SLEW_RATE" },
+    { 0x0AA, 0x00200000UL, 0UL,                                        "BUS_POWER_LIMIT_ENABLE=0（=1 时禁用主动制动）" },
+#endif
     /* FG 输出（CLOSED_LOOP1 0x88）—— 不显式配置的话新片转速读数会差 3 倍 */
     { 0x088, 0x00003000UL, ((uint32_t)CFG_FG_SEL) << 12,         "FG_SEL（0=全程输出 FG）" },
     { 0x088, 0x00000F00UL, ((uint32_t)CFG_FG_DIV) << 8,          "FG_DIV（1h = 每电周期 1 脉冲 → 7 脉冲/转）" },
