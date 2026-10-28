@@ -209,3 +209,9 @@ EEPROM 只是为了让"不接 MCU 单独上电"时也能跑。
 - MCF8315D 数据手册 **SLLSG06**
 - MCF8315D I2C 编程指南 **SLLA662**
 - MCF8315D EEPROM 读写 **SLLA664**
+
+---
+
+## 9. 许可
+
+MIT License，见 [LICENSE](LICENSE)。
