@@ -48,7 +48,7 @@
  *   扫描会一直扫不到器件。本固件在 SPEED 上持续输出 1% 占空比保活
  *   （1% 时 DUTY_CMD 仍为 0，电机不会转）。
  * ★ 目标板要给 VM 供电（器件内部从 VM 生成 AVDD/DVDD）。*/
-#define EN_PROVISION_MODE      (1)
+#define EN_PROVISION_MODE      (0)
 
 /* 后台故障轮询周期 */
 #define MONITOR_PERIOD_MS      (500UL)
@@ -193,6 +193,53 @@
 #define CFG_ISD_BRAKE_EN       (0)   /* BRAKE_EN（0x80 b29）：启动前制动
                                         0 = 不做（能量不往绕组里灌）*/
 
+/* --- FG 转速输出（CLOSED_LOOP1 0x88）---
+ * ★ 这里是典型的"复位值陷阱"：
+ *   FG_DIV 复位值 0h = **3× 电频率**，不显式配置的话新片转速读数会差 3 倍。
+ *   FG_DIV = 1h 表示"每个电周期 1 个脉冲"，配合 7 对极就是每机械转 7 个脉冲，
+ *   正好对上 config.h 里的 FG_PULSES_PER_REV = 7。
+ *   （想改成"每转 1 个脉冲"也可以：FG_DIV = 7h，同时把 FG_PULSES_PER_REV 改成 1，
+ *     但低速时脉冲太稀，1 秒窗口的转速分辨率会变差。）*/
+#define CFG_FG_SEL             (0)   /* FG_SEL（b13-12）：0 = ISD/开环/闭环全程输出 */
+#define CFG_FG_DIV             (1)   /* FG_DIV（b11-8）：1h = 每电周期 1 脉冲 */
+
+/* --- 故障处理方式（FAULT_CONFIG1 0x90 b18）---
+ * 0 = 锁存：EEPROM 校验失败时六个 FET 保持 Hi-Z，必须 CLR_FLT 才能恢复
+ * 1 = 只上报：只置故障位，照常驱动
+ * ★ 本工程每次上电都会重新下发整张配置表，EEPROM 只是"脱机自走"时的备份，
+ *   所以选 1 —— 不能因为 EEPROM 老化就让整台机器不转。*/
+#define CFG_EEP_FAULT_MODE     (1)
+
+/* ---------- 堵转与母线保护（FAULT_CONFIG2 0x92）----------
+ * ★ 复位值全 0 = 三种堵转检测全部关闭、母线欠压/过压阈值"无限制"。
+ *   也就是说新片不显式配置的话，电机真卡住时没有任何堵转保护。
+ *   下面这一组是台架上验证过的值。*/
+#define CFG_LOCK1_EN           (1)  /* b30 堵转检测 1：异常转速 */
+#define CFG_LOCK2_EN           (1)  /* b29 堵转检测 2：反电动势异常 */
+#define CFG_LOCK3_EN           (1)  /* b28 堵转检测 3：无电机（电流过小）*/
+#define CFG_LOCK_ABN_SPEED_IDX (2)  /* b27-25 异常转速阈值：0h=130% 1h=140% 2h=150% … 7h=200% */
+#define CFG_ABN_BEMF_THR_IDX   (5)  /* b24-22 反电动势异常阈值（相对期望值）：
+                                       0h=40% 1h=45% 2h=50% 3h=55% 4h=60% 5h=65% ← 当前 */
+#define CFG_NO_MTR_THR_IDX     (1)  /* b21-19 无电机电流阈值：0h=0.023A 1h=0.046A 2h=0.062A … */
+#define CFG_HW_LOCK_MODE       (4)  /* b18-16 硬件限流堵转后的动作：
+                                       0h 锁存 + 三态      1h/2h 锁存 + 低侧/高侧制动
+                                       3h 自动重试后锁存  4h 自动重试 + 低侧制动 ← 当前
+                                       6h 只上报不动作    7h 关闭该检测 */
+#define CFG_HW_LOCK_DEG_IDX    (2)  /* b15-13 硬件限流去抖：0h 无 1h=1µs 2h=2µs … 7h=7µs */
+#define CFG_VOLT_HYS_IDX       (1)  /* b12-11 欠压/过压恢复回差：0h=0.5V 1h=1V 2h=2V 3h=3V */
+#define CFG_MIN_VM_IDX         (1)  /* b10-8 运行最低母线电压：0h 无限制 1h=6V 2h=7V 3h=8V … */
+#define CFG_MIN_VM_MODE        (1)  /* b7 欠压恢复：0 锁存  1 电压恢复后自动清除 */
+#define CFG_MAX_VM_IDX         (7)  /* b6-4 运行最高母线电压：0h 无限制 … 3h=22V … 7h=34V */
+#define CFG_MAX_VM_MODE        (1)  /* b3 过压恢复：0 锁存  1 自动清除 */
+/* 注：AUTO_RETRY_TIMES（b2-0）保持 0h = 重试次数不限。
+ *     器件会自己不停重试，固件层另有 3 次上限并做"停机→等待→重来"的干净重启。*/
+
+/* ---------- 内部算法（INT_ALGO_1 0xA0）----------
+ * ISD 的可信度直接取决于这几个时间常数，复位值都偏短。*/
+#define CFG_SPEED_PIN_FILT_IDX (1)  /* b28-27 SPEED 脚毛刺滤波：0h 无 1h=0.2µs 2h=0.5µs 3h=1µs */
+#define CFG_ISD_RUN_TIME_IDX   (1)  /* b23-22 ISD 判定"在转"的保持时间：0h=1ms 1h=5ms 2h=50ms 3h=100ms */
+#define CFG_ISD_TIMEOUT_IDX    (3)  /* b21-20 ISD 超时（测不出来时）：0h=500ms 1h=750ms 2h=1s 3h=2s */
+
 /* --- 旋转方向 ---
  * 24 脚封装没有 DIR 引脚，方向只能用 I2C 的 DIR_INPUT 字段（PERI_CONFIG1 0xAA b20-19）：
  *   1h = 顺时针 OUTA-OUTB-OUTC   2h = 逆时针 OUTA-OUTC-OUTB
@@ -262,6 +309,9 @@ static const McfCfgEntry MCF_STANDALONE_CFG[] = {
     { 0x088, 0x00F80000UL, ((uint32_t)CFG_CL_DEC_IDX) << 19,     "CL_DEC" },
     { 0x088, 0x00078000UL, ((uint32_t)CFG_PWM_FREQ_IDX) << 15,   "PWM_FREQ_OUT（55 kHz）" },
     { 0x088, 0x00000008UL, ((uint32_t)CFG_AVS_EN) << 3,          "AVS_EN（防 VM 浪涌）" },
+    /* FG 输出（CLOSED_LOOP1 0x88）—— 不显式配置的话新片转速读数会差 3 倍 */
+    { 0x088, 0x00003000UL, ((uint32_t)CFG_FG_SEL) << 12,         "FG_SEL（0=全程输出 FG）" },
+    { 0x088, 0x00000F00UL, ((uint32_t)CFG_FG_DIV) << 8,          "FG_DIV（1h = 每电周期 1 脉冲 → 7 脉冲/转）" },
     /* 电机参数（标定值；非零后器件不再跑 MPET）*/
     { 0x08A, 0x0000FF00UL, ((uint32_t)CFG_MOTOR_RES_CODE)  <<  8, "MOTOR_RES" },
     { 0x08A, 0x000000FFUL, (uint32_t)CFG_MOTOR_IND_CODE,          "MOTOR_IND" },
@@ -275,6 +325,25 @@ static const McfCfgEntry MCF_STANDALONE_CFG[] = {
     { 0x090, 0x07800000UL, ((uint32_t)CFG_HW_LOCK_ILIMIT_IDX) << 23, "HW_LOCK_ILIMIT（比较器）" },
     { 0x090, 0x00780000UL, ((uint32_t)CFG_LOCK_ILIMIT_IDX)   << 19, "LOCK_ILIMIT（ADC）" },
     { 0x090, 0x00007800UL, ((uint32_t)CFG_LOCK_DEG_IDX)      << 11, "LOCK_ILIMIT_DEG（10ms）" },
+    { 0x090, 0x00040000UL, ((uint32_t)CFG_EEP_FAULT_MODE)    << 18, "EEP_FAULT_MODE（1=只上报，不锁死 FET）" },
+    /* 堵转与母线保护（FAULT_CONFIG2 0x092）—— 复位值全 0 = 保护全关 */
+    { 0x092, 0x40000000UL, ((uint32_t)CFG_LOCK1_EN)           << 30, "LOCK1_EN（异常转速堵转）" },
+    { 0x092, 0x20000000UL, ((uint32_t)CFG_LOCK2_EN)           << 29, "LOCK2_EN（反电动势异常）" },
+    { 0x092, 0x10000000UL, ((uint32_t)CFG_LOCK3_EN)           << 28, "LOCK3_EN（无电机）" },
+    { 0x092, 0x0E000000UL, ((uint32_t)CFG_LOCK_ABN_SPEED_IDX) << 25, "LOCK_ABN_SPEED（150%）" },
+    { 0x092, 0x01C00000UL, ((uint32_t)CFG_ABN_BEMF_THR_IDX)   << 22, "ABNORMAL_BEMF_THR（65%）" },
+    { 0x092, 0x00380000UL, ((uint32_t)CFG_NO_MTR_THR_IDX)     << 19, "NO_MTR_THR（0.046A）" },
+    { 0x092, 0x00070000UL, ((uint32_t)CFG_HW_LOCK_MODE)       << 16, "HW_LOCK_ILIMIT_MODE（自动重试+低侧制动）" },
+    { 0x092, 0x0000E000UL, ((uint32_t)CFG_HW_LOCK_DEG_IDX)    << 13, "HW_LOCK_ILIMIT_DEG（2µs）" },
+    { 0x092, 0x00001800UL, ((uint32_t)CFG_VOLT_HYS_IDX)       << 11, "VOLTAGE_HYSTERESIS（1V）" },
+    { 0x092, 0x00000700UL, ((uint32_t)CFG_MIN_VM_IDX)         <<  8, "MIN_VM_MOTOR（6V）" },
+    { 0x092, 0x00000080UL, ((uint32_t)CFG_MIN_VM_MODE)        <<  7, "MIN_VM_MODE（自动恢复）" },
+    { 0x092, 0x00000070UL, ((uint32_t)CFG_MAX_VM_IDX)         <<  4, "MAX_VM_MOTOR（34V）" },
+    { 0x092, 0x00000008UL, ((uint32_t)CFG_MAX_VM_MODE)        <<  3, "MAX_VM_MODE（自动恢复）" },
+    /* 内部算法（INT_ALGO_1 0x0A0）—— ISD 相关时间常数 */
+    { 0x0A0, 0x18000000UL, ((uint32_t)CFG_SPEED_PIN_FILT_IDX) << 27, "SPEED_PIN_GLITCH_FILTER（0.2µs）" },
+    { 0x0A0, 0x00C00000UL, ((uint32_t)CFG_ISD_RUN_TIME_IDX)   << 22, "ISD_RUN_TIME（5ms）" },
+    { 0x0A0, 0x00300000UL, ((uint32_t)CFG_ISD_TIMEOUT_IDX)    << 20, "ISD_TIMEOUT（2s）" },
     { 0x086, 0x78000000UL, ((uint32_t)CFG_OL_ILIMIT_IDX)     << 27, "OL_ILIMIT（开环）" },
     { 0x084, 0x001E0000UL, ((uint32_t)CFG_ALIGN_ILIMIT_IDX)  << 17, "ALIGN_OR_SLOW_CURRENT_ILIMIT" },
     { 0x084, 0x00003E00UL, ((uint32_t)CFG_IPD_CURR_IDX)      <<  9, "IPD_CURR_THR" },

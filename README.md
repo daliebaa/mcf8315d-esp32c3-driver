@@ -6,6 +6,13 @@
 本工程是在一台 9V 低电感、低 Ke 的轴流风机上实测调通的，配置文件里保留了每项参数的
 取值依据（多数是实测结论，不是手册复位值）。
 
+**文档**
+
+| 文档 | 内容 |
+|---|---|
+| [docs/config_reference.md](docs/config_reference.md) | **配置参考**：24 个影子寄存器逐项说明、复位值陷阱、标定顺序 |
+| [docs/speed_pwm.md](docs/speed_pwm.md) | SPEED 引脚 PWM 调速接口（接线/频率/占空比/休眠/代码示例）|
+
 ---
 
 ## 1. 硬件连接
@@ -117,6 +124,36 @@ PWM 抖动（spread spectrum，手册 §6.3.18）把开关频率在 55kHz 附近
 | 开环加速 | OL_ILIMIT | 2.812 A |
 | 闭环运行 | ILIMIT | 2.812 A |
 | 堵转检测 | LOCK/HW_LOCK_ILIMIT | 3.75 A（4 位档位上限） |
+
+### 4.6 完整配置表（65 项）
+
+`config_opt.h` 里的 `MCF_STANDALONE_CFG` 是一张**读-改-写**表：每项 = `{地址, 位掩码, 目标值, 说明}`，
+只改掩码内的位，`bit31 PARITY` 和其它字段原样保留。
+
+| 寄存器 | 项数 | 内容 |
+|---|---|---|
+| 0x080 ISD_CONFIG | 4 | 初始速度检测 + 重同步 |
+| 0x084 MOTOR_STARTUP1 | 5 | 对齐方式 / 电流 / 时间 / 斜率 |
+| 0x086 MOTOR_STARTUP2 | 4 | 开环电流 / 加速度 / 换相阈值 |
+| 0x088 CLOSED_LOOP1 | 8 | 载波 / 抖动 / 加减速 / AVS / FG |
+| 0x08A CLOSED_LOOP2 | 6 | 停机方式 / 电机 R、L |
+| 0x08C + 0x08E | 5 | Ke、速度环 Kp/Ki、MAX_SPEED |
+| 0x090 FAULT_CONFIG1 | 5 | 各阶段电流限值、EEP_FAULT_MODE |
+| 0x092 FAULT_CONFIG2 | 13 | 三种堵转检测 + 母线欠压/过压保护 |
+| 0x0A0 INT_ALGO_1 | 3 | ISD 时间常数、SPEED 脚滤波 |
+| 0x0A4 / 0xA6 / 0xA8 / 0xAA / 0xAC / 0xAE | 12 | 引脚 / 器件 / Buck / 方向 / 过压 |
+
+逐字段含义见 **[docs/config_reference.md](docs/config_reference.md)**。
+
+**为什么要配这么多**：器件复位值基本全是 0，但"0"不等于"能用"——
+`FG_DIV` 复位值是 3× 电频率（转速读数差 3 倍）、`ALIGN_TIME` 复位值只有 10 ms
+（对齐电流还没建立就进开环）、`LOCK1/2/3_EN` 复位值全关（电机卡住没有任何保护）。
+
+固件每次上电都会把这张表重下发一遍，所以**芯片是全新的、EEPROM 是空的，接上 MCU 也能正常工作**；
+EEPROM 只是为了让"不接 MCU 单独上电"时也能跑。
+
+> 产线批量烧录用的是同一份代码，把 `config_opt.h` 的 `EN_PROVISION_MODE` 改成 `1` 即可
+> （接一片烧一片，自动判定换片）。默认 `0`，走正常调速固件。
 
 ---
 
