@@ -12,20 +12,6 @@ MCF8315D 是 TI 的无感 FOC 三相 BLDC 驱动芯片。本工程用 ESP32-C3 �
 | [docs/speed_pwm.md](docs/speed_pwm.md) | 只给 SPEED 脚喂 PWM 的接口说明（频率/占空比/休眠/代码） |
 | [release/](release/) | 产线批量烧录固件（接一片烧一片） |
 
-## 接线
-
-| MCF8315D | ESP32-C3 | 说明 |
-|---|---|---|
-| SDA / SCL | GPIO7 / GPIO8 | 5.1k 上拉到 AVDD |
-| SPEED/WAKE | GPIO5 | 输出 5 kHz PWM，占空比 = 转速百分比 |
-| nFAULT | GPIO10 | 开漏，下降沿中断 |
-| FG | GPIO6 | 开漏，转速脉冲 |
-| DRVOFF | 接地 | 不用软件控制 |
-| BRAKE | GPIO4 | 低电平 = 不制动 |
-
-供电：**AVDD 只有 20mA**（I2C 上拉就挂这），**Buck 电阻模式只能带 < 10mA**，
-两者都不能给 MCU 供电。
-
 ## 编译与烧录
 
 ```bash
